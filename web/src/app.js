@@ -1,8 +1,9 @@
 "use strict";
 
 /* 展柜报警链路冗余裁决 —— 前端逻辑。
- * 所有裁决均调用真实业务 API（/api/draft、/api/adjudicate），前端不做任何本地裁决。
- * 修改任一草稿字段后，本地立即作废旧裁决，并将新草稿同步到服务端使服务端裁决一并失效。
+ * 所有裁决均调用真实业务 API（/api/draft、/api/adjudicate、/api/maintenance/*），
+ * 前端不做任何本地裁决。修改任一草稿字段后，本地立即作废旧结果，并将新草稿同步到
+ * 服务端使服务端结果一并失效；改选计划停用光纤同样作废旧检修预案。
  */
 
 const MIN_NODES = 5, MAX_NODES = 9, MIN_FIBERS = 7, MAX_FIBERS = 15;
@@ -30,7 +31,11 @@ const state = {
   source: "",
   target: "",
   attLimit: 0,
-  result: null, // 当前展示的裁决（来自服务端）
+  result: null,      // 当前展示的普通裁决（来自服务端）
+  maintenance: null, // 当前展示的检修切换预案（来自服务端）
+  outageFiber: 1,    // 选中的计划停用光纤（1 基录入序号）
+  maintPhase: "before", // 拓扑图分阶段展示：before=检修前 / during=停用期间
+  focus: "adjudication", // 拓扑图当前聚焦：adjudication=普通裁决 / maintenance=检修预案
 };
 
 const $ = (id) => document.getElementById(id);
@@ -73,6 +78,22 @@ function fillSelect(sel, current) {
     sel.appendChild(opt);
   });
   if (state.nodes.includes(current)) sel.value = current;
+}
+
+function renderOutageSelect() {
+  const sel = $("outage-select");
+  sel.innerHTML = "";
+  state.fibers.forEach((f, i) => {
+    const opt = document.createElement("option");
+    opt.value = String(i + 1);
+    opt.textContent = `#${i + 1}（${f.a} — ${f.b}）`;
+    sel.appendChild(opt);
+  });
+  // 草稿增删光纤后，把选择夹紧到合法范围
+  if (state.outageFiber > state.fibers.length) {
+    state.outageFiber = state.fibers.length || 1;
+  }
+  sel.value = String(state.outageFiber);
 }
 
 function refreshAllSelects() {
@@ -150,6 +171,7 @@ function renderFiberRows() {
   });
   $("fiber-count-label").textContent = state.fibers.length;
   $("add-fiber").disabled = state.fibers.length >= MAX_FIBERS;
+  renderOutageSelect();
 }
 
 function renderAll() {
@@ -204,18 +226,33 @@ function collectDraft() {
 let saveTimer = null;
 
 function onDraftChanged() {
-  // 本地立即使旧裁决失效
+  // 本地立即使旧裁决与旧检修预案失效
   if (state.result) {
     state.result = null;
     showStale();
   }
+  if (state.maintenance) {
+    state.maintenance = null;
+    showMaintenanceStale();
+  }
   drawTopology();
-  // 防抖同步草稿到服务端，使服务端旧裁决一并失效（草稿合法时才保存）
+  // 防抖同步草稿到服务端，使服务端旧结果一并失效（草稿合法时才保存）
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     const { draft } = collectDraft();
     if (draft) api("PUT", "/api/draft", draft).catch(() => {});
   }, 500);
+}
+
+function onOutageChanged() {
+  // 目标停用光纤改变：旧预案立即作废，并在服务端登记新选择使旧预案失效。
+  // 只更新停用目标，不重存草稿（草稿版本不变，普通裁决不受影响）。
+  if (state.maintenance) {
+    state.maintenance = null;
+    showMaintenanceStale();
+  }
+  drawTopology();
+  api("PUT", "/api/maintenance/outage", { outage_fiber: state.outageFiber }).catch(() => {});
 }
 
 function showStale() {
@@ -224,6 +261,14 @@ function showStale() {
   $("result-banner").innerHTML =
     '<div class="banner banner-stale">草稿已修改，旧裁决已失效，请重新提交裁决。</div>';
   $("details").innerHTML = "";
+}
+
+function showMaintenanceStale() {
+  const panel = $("maintenance-panel");
+  panel.hidden = false;
+  $("maintenance-banner").innerHTML =
+    '<div class="banner banner-stale">草稿或计划停用光纤已修改，旧检修预案已失效，请重新生成。</div>';
+  $("maintenance-details").innerHTML = "";
 }
 
 /* ---------------- API 调用 ---------------- */
@@ -271,6 +316,101 @@ async function submitAdjudication() {
   }
 }
 
+async function submitMaintenancePlan() {
+  const errBox = $("maintenance-error");
+  errBox.hidden = true;
+  const { draft, errors } = collectDraft();
+  if (errors) {
+    errBox.textContent = "草稿校验未通过：" + errors.join("；");
+    errBox.hidden = false;
+    return;
+  }
+  const btn = $("submit-maintenance");
+  btn.disabled = true;
+  try {
+    await api("PUT", "/api/draft", draft);
+    await api("PUT", "/api/maintenance/outage", { outage_fiber: state.outageFiber });
+    state.maintenance = await api("POST", "/api/maintenance/plan", {
+      outage_fiber: state.outageFiber,
+    });
+    state.maintPhase = "before";
+    renderMaintenance();
+  } catch (e) {
+    errBox.textContent = "检修预案请求失败：" + e.message;
+    errBox.hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* ---------------- 检修预案渲染 ---------------- */
+
+function maintenancePathCard(title, cls, badge, path) {
+  return (
+    `<div class="path-card ${cls}"><h3>${title} <span class="role-badge">${badge}</span></h3><dl>` +
+    `<dt>经过接续点</dt><dd>${path.nodes.map(escapeHtml).join(" → ")}</dd>` +
+    `<dt>光纤录入序号</dt><dd>${path.fibers.map((f) => "#" + f).join("、")}</dd>` +
+    `<dt>总长度</dt><dd>${path.length}</dd>` +
+    `<dt>总衰减</dt><dd>${path.attenuation}</dd>` +
+    `</dl></div>`
+  );
+}
+
+function setMaintPhase(phase) {
+  state.maintPhase = phase;
+  drawTopology();
+  const $phaseBefore = $("phase-before");
+  const $phaseDuring = $("phase-during");
+  if ($phaseBefore) $phaseBefore.classList.toggle("active", phase === "before");
+  if ($phaseDuring) $phaseDuring.classList.toggle("active", phase === "during");
+}
+
+function renderMaintenance() {
+  const m = state.maintenance;
+  state.focus = "maintenance";
+  const panel = $("maintenance-panel");
+  panel.hidden = false;
+  const banner = $("maintenance-banner");
+  const details = $("maintenance-details");
+
+  if (m.status !== "ok") {
+    banner.innerHTML =
+      '<div class="banner banner-infeasible">无法形成无中断检修预案' +
+      `<p>${escapeHtml(m.message || "在只切换一路的条件下无法覆盖该计划停纤。")}</p></div>`;
+    details.innerHTML =
+      '<div class="summary">无法保证检修前与停用期间均为双路独立且只切换一路。' +
+      "请调整拓扑（增加独立走廊/备用光纤）、衰减上限或改选停用光纤后重试。</div>";
+    drawTopology();
+    panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    return;
+  }
+
+  const a = m.affected, r = m.resident, q = m.alternate;
+  const longest = Math.max(a.length, r.length, q.length);
+  const attSum = a.attenuation + r.attenuation + q.attenuation;
+  banner.innerHTML =
+    '<div class="banner banner-ok">已生成无中断检修切换预案：全程双路独立，仅切换一路。</div>' +
+    '<div class="phase-switch">' +
+    '<button type="button" id="phase-before" class="phase-btn active">检修前（双路含停用光纤）</button>' +
+    '<button type="button" id="phase-during" class="phase-btn">停用期间（切到替代路）</button>' +
+    "</div>";
+  details.innerHTML =
+    maintenancePathCard("检修前 · 受影响路", "primary", "停用开始时切出 / 恢复后切回", a) +
+    maintenancePathCard("驻留路", "backup", "两阶段保持不变", r) +
+    maintenancePathCard("停用期间 · 替代路", "alternate", "停用期间承载", q) +
+    `<div class="summary">计划停用光纤：#${m.outage_fiber}；` +
+    `两阶段线路：检修前 受影响路 ${a.fibers.map((f) => "#" + f).join("、")} ＋ 驻留路 ` +
+    `${r.fibers.map((f) => "#" + f).join("、")}；停用期间 替代路 ` +
+    `${q.fibers.map((f) => "#" + f).join("、")} ＋ 驻留路 ${r.fibers.map((f) => "#" + f).join("、")}。` +
+    `切换线路：#${a.fibers.join("、#")} ⇄ #${q.fibers.join("、#")}，` +
+    `替代路相对原路长度增量 ${m.switched_path.length_delta >= 0 ? "+" : ""}${m.switched_path.length_delta}；` +
+    `三路最长长度 ${longest}、三路衰减和 ${attSum}，各线路衰减均未超过上限（草稿版本 v${m.draft_version}）。</div>`;
+  $("phase-before").addEventListener("click", () => setMaintPhase("before"));
+  $("phase-during").addEventListener("click", () => setMaintPhase("during"));
+  setMaintPhase("before");
+  panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
 /* ---------------- 结果渲染 ---------------- */
 
 function pathCard(title, cls, path) {
@@ -292,6 +432,7 @@ function escapeHtml(s) {
 
 function renderResult() {
   const r = state.result;
+  state.focus = "adjudication";
   const panel = $("result-panel");
   panel.hidden = false;
   const banner = $("result-banner");
@@ -334,9 +475,32 @@ function drawTopology() {
   });
 
   const result = state.result && state.result.status === "ok" ? state.result : null;
+  const maint = state.focus === "maintenance"
+    && state.maintenance && state.maintenance.status === "ok"
+    ? state.maintenance : null;
   const fiberRole = {};
   const nodeRole = {};
-  if (result) {
+  const outageEdges = new Set();
+  if (maint) {
+    outageEdges.add(maint.outage_fiber);
+    if (state.maintPhase === "during") {
+      // 停用期间：替代路 + 驻留路；停用光纤不在任何在用线路中
+      maint.alternate.fibers.forEach((f) => (fiberRole[f] = "alternate"));
+      maint.resident.fibers.forEach((f) => (fiberRole[f] = "backup"));
+      maint.alternate.nodes.forEach((n) => (nodeRole[n] = "alternate"));
+      maint.resident.nodes.forEach((n) => (nodeRole[n] = "backup"));
+    } else {
+      // 检修前：受影响路（实际承载停用光纤）+ 驻留路
+      maint.affected.fibers.forEach((f) => (fiberRole[f] = "primary"));
+      maint.resident.fibers.forEach((f) => (fiberRole[f] = "backup"));
+      maint.affected.nodes.forEach((n) => (nodeRole[n] = "primary"));
+      maint.resident.nodes.forEach((n) => (nodeRole[n] = "backup"));
+    }
+  } else if (state.focus === "maintenance"
+      && state.maintenance && state.maintenance.status !== "ok") {
+    // 不可行时仍标出计划停用光纤
+    outageEdges.add(state.maintenance.outage_fiber);
+  } else if (result) {
     result.primary.fibers.forEach((f) => (fiberRole[f] = "primary"));
     result.backup.fibers.forEach((f) => (fiberRole[f] = "backup"));
     result.primary.nodes.forEach((n) => (nodeRole[n] = "primary"));
@@ -364,10 +528,18 @@ function drawTopology() {
     const cpx = mx + nx * off, cpy = my + ny * off;
 
     const role = fiberRole[i + 1];
+    const isOutage = outageEdges.has(i + 1);
+    // 停用期间（或不可行提示）把停用光纤标为红色虚线；检修前它仍由受影响路承载
+    const outageActive = isOutage && (!maint || state.maintPhase === "during");
     const path = document.createElementNS(NS, "path");
     path.setAttribute("d", `M ${p1.x} ${p1.y} Q ${cpx} ${cpy} ${p2.x} ${p2.y}`);
-    path.setAttribute("class", "edge" + (role ? " edge-" + role : ""));
-    if (role === "backup") path.setAttribute("stroke-dasharray", "8 5");
+    let cls = "edge";
+    if (outageActive) cls += " edge-outage";
+    else if (role) cls += " edge-" + role;
+    path.setAttribute("class", cls);
+    if (role === "backup" || (outageActive && isOutage)) {
+      path.setAttribute("stroke-dasharray", "8 5");
+    }
     svg.appendChild(path);
 
     const qx = 0.25 * p1.x + 0.5 * cpx + 0.25 * p2.x;
@@ -375,8 +547,12 @@ function drawTopology() {
     const label = document.createElementNS(NS, "text");
     label.setAttribute("x", qx + nx * 12);
     label.setAttribute("y", qy + ny * 12);
-    label.setAttribute("class", "edge-label" + (role ? " edge-label-" + role : ""));
-    label.textContent = `#${i + 1} L${f.length} A${f.attenuation}`;
+    let labelCls = "edge-label";
+    if (outageActive) labelCls += " edge-label-outage";
+    else if (role) labelCls += " edge-label-" + role;
+    label.setAttribute("class", labelCls);
+    label.textContent = `#${i + 1} L${f.length} A${f.attenuation}` +
+      (isOutage ? "（计划停用）" : "");
     svg.appendChild(label);
   });
 
@@ -446,6 +622,11 @@ function bindEvents() {
   });
 
   $("submit").addEventListener("click", submitAdjudication);
+  $("submit-maintenance").addEventListener("click", submitMaintenancePlan);
+  $("outage-select").addEventListener("change", (e) => {
+    state.outageFiber = Number(e.target.value);
+    onOutageChanged();
+  });
 }
 
 function loadSample() {

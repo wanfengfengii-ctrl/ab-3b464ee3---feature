@@ -12,6 +12,7 @@
     <p class="subtitle">
       录入 5–9 个接续点与 7–15 段可用光纤，指定主控室与展柜后提交裁决。
       系统将选出一条主路与一条备路：两路除两端外不共享接续点、不复用同一光纤，且各自衰减不超过上限。
+      也可从已录入光纤中选择一段计划检修停用的光纤，生成检修前与停用期间均保持双路独立、仅切换一路的预案。
     </p>
   </header>
 
@@ -50,6 +51,22 @@
         <button id="submit" type="button" class="primary">提交裁决</button>
       </div>
       <p id="form-error" class="error" hidden></p>
+
+      <div class="maintenance-box">
+        <h3>计划检修 · 单路切换预案（可选）</h3>
+        <div class="row">
+          <label>计划停用光纤（录入序号）
+            <select id="outage-select"></select>
+          </label>
+          <button id="submit-maintenance" type="button" class="primary">生成检修切换预案</button>
+        </div>
+        <p class="hint">
+          检修前双路必须实际使用该光纤；停用开始后受影响路切到替代路、两路均不再使用它，
+          恢复后切回；驻留路两阶段接续点与光纤序列完全不变。只切换一路，任一阶段仍须满足
+          接续点独立、光纤不复用与衰减上限。
+        </p>
+        <p id="maintenance-error" class="error" hidden></p>
+      </div>
     </section>
 
     <section class="panel" id="topology-panel">
@@ -60,6 +77,7 @@
         <span><i class="swatch sw-backup"></i>备路</span>
         <span><i class="swatch sw-source"></i>主控室</span>
         <span><i class="swatch sw-target"></i>展柜</span>
+        <span><i class="swatch sw-outage"></i>停用光纤</span>
         <span class="legend-note">边标签：#录入序号 L长度 A衰减</span>
       </div>
     </section>
@@ -68,6 +86,12 @@
       <h2>裁决结果</h2>
       <div id="result-banner"></div>
       <div id="details" class="details"></div>
+    </section>
+
+    <section class="panel" id="maintenance-panel" hidden>
+      <h2>计划检修切换预案</h2>
+      <div id="maintenance-banner"></div>
+      <div id="maintenance-details" class="details"></div>
     </section>
   </main>
 

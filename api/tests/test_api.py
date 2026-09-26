@@ -14,6 +14,8 @@ def reset_state():
         _state["draft"] = None
         _state["draft_version"] = 0
         _state["adjudication"] = None
+        _state["maintenance"] = None
+        _state["current_outage"] = None
     yield
 
 

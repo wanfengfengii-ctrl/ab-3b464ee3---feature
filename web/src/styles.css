@@ -10,6 +10,10 @@
   --backup-soft: #fef3c7;
   --source: #1d4ed8;
   --target: #7c3aed;
+  --alternate: #0891b2;
+  --alternate-soft: #cffafe;
+  --outage: #b91c1c;
+  --outage-soft: #fee2e2;
   --danger: #b91c1c;
   --danger-soft: #fee2e2;
 }
@@ -91,14 +95,47 @@ button.link { border: none; background: none; color: var(--danger); padding: 4px
 
 .error { color: var(--danger); font-size: 13px; margin: 10px 0 0; }
 
+.maintenance-box {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px dashed #86efac;
+  border-radius: 8px;
+  background: #f0fdf4;
+}
+.maintenance-box h3 { margin-top: 0; color: var(--primary); }
+.maintenance-box .hint { font-size: 12px; color: var(--muted); margin: 8px 0 0; line-height: 1.6; }
+.role-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1px 8px;
+  vertical-align: middle;
+}
+
+.phase-switch { display: flex; gap: 10px; margin-bottom: 14px; }
+.phase-btn { padding: 6px 14px; border-radius: 20px; }
+.phase-btn.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+  font-weight: 600;
+}
+
 #topology { width: 100%; height: auto; display: block; }
 
 .edge { stroke: #94a3b8; stroke-width: 2; fill: none; }
 .edge-primary { stroke: var(--primary); stroke-width: 4.5; }
 .edge-backup { stroke: var(--backup); stroke-width: 4.5; }
+.edge-alternate { stroke: var(--alternate); stroke-width: 4.5; }
+.edge-outage { stroke: var(--outage); stroke-width: 4.5; }
 .edge-label { font-size: 10px; fill: #475569; text-anchor: middle; }
 .edge-label-primary { fill: var(--primary); font-weight: 700; }
 .edge-label-backup { fill: var(--backup); font-weight: 700; }
+.edge-label-alternate { fill: var(--alternate); font-weight: 700; }
+.edge-label-outage { fill: var(--outage); font-weight: 700; }
 
 .node circle { fill: #fff; stroke: #64748b; stroke-width: 2; }
 .node text { font-size: 10px; text-anchor: middle; fill: var(--ink); }
@@ -107,11 +144,14 @@ button.link { border: none; background: none; color: var(--danger); padding: 4px
 .node-target circle { fill: #ede9fe; stroke: var(--target); stroke-width: 3; }
 .node-primary circle { fill: var(--primary-soft); stroke: var(--primary); }
 .node-backup circle { fill: var(--backup-soft); stroke: var(--backup); }
+.node-alternate circle { fill: var(--alternate-soft); stroke: var(--alternate); }
 
 .legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px; color: var(--muted); margin-top: 8px; }
 .legend .swatch { display: inline-block; width: 14px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
 .sw-primary { background: var(--primary); }
 .sw-backup { background: var(--backup); }
+.sw-alternate { background: var(--alternate); }
+.sw-outage { background: var(--outage); }
 .sw-source { background: var(--source); }
 .sw-target { background: var(--target); }
 .legend-note { margin-left: auto; }
@@ -127,6 +167,7 @@ button.link { border: none; background: none; color: var(--danger); padding: 4px
 .path-card h3 { margin: 0 0 8px; font-size: 14px; }
 .path-card.primary { border-left: 5px solid var(--primary); }
 .path-card.backup { border-left: 5px solid var(--backup); }
+.path-card.alternate { border-left: 5px solid var(--alternate); }
 .path-card dl { display: grid; grid-template-columns: 96px 1fr; gap: 6px 10px; margin: 0; font-size: 13px; }
 .path-card dt { color: var(--muted); }
 .path-card dd { margin: 0; word-break: break-all; }

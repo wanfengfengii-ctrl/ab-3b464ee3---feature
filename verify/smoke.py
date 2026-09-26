@@ -80,6 +80,40 @@ INFEASIBLE_DRAFT = {
     "attenuation_limit": 100,
 }
 
+# 三条互不共享中间节点的走廊：A（#1,#2 含停用光纤）、B（#3,#4,#5）、C（#6,#7）
+MAINT_DRAFT = {
+    "nodes": ["S", "T", "A", "B", "C", "D"],
+    "fibers": [
+        {"a": "S", "b": "A", "length": 1, "attenuation": 1},
+        {"a": "A", "b": "T", "length": 1, "attenuation": 1},
+        {"a": "S", "b": "B", "length": 2, "attenuation": 1},
+        {"a": "B", "b": "D", "length": 2, "attenuation": 1},
+        {"a": "D", "b": "T", "length": 2, "attenuation": 1},
+        {"a": "S", "b": "C", "length": 3, "attenuation": 1},
+        {"a": "C", "b": "T", "length": 3, "attenuation": 1},
+    ],
+    "source": "S",
+    "target": "T",
+    "attenuation_limit": 1000,
+}
+
+# 普通双路存在，但停用 #1 后所有 S-T 路径都经过 B：无法只切换一路
+MAINT_INFEASIBLE_DRAFT = {
+    "nodes": ["S", "T", "A", "B", "C"],
+    "fibers": [
+        {"a": "S", "b": "A", "length": 1, "attenuation": 1},
+        {"a": "A", "b": "T", "length": 1, "attenuation": 1},
+        {"a": "S", "b": "B", "length": 2, "attenuation": 1},
+        {"a": "B", "b": "C", "length": 2, "attenuation": 1},
+        {"a": "C", "b": "T", "length": 2, "attenuation": 1},
+        {"a": "B", "b": "T", "length": 8, "attenuation": 1},
+        {"a": "A", "b": "B", "length": 3, "attenuation": 1},
+    ],
+    "source": "S",
+    "target": "T",
+    "attenuation_limit": 1000,
+}
+
 
 def main():
     print(f"API_URL={API_URL}  WEB_URL={WEB_URL}")
@@ -152,6 +186,69 @@ def main():
     bad = dict(FEASIBLE_DRAFT, fibers=FEASIBLE_DRAFT["fibers"][:6])
     status, _ = request_json("PUT", f"{api}/draft", bad)
     check("光纤少于 7 段被拒绝（422）", status == 422, f"got {status}")
+
+    print("-- 计划检修单路切换预案（经由 Web 代理） --")
+    status, _ = request_json("PUT", f"{api}/draft", MAINT_DRAFT)
+    check("保存检修预案草稿", status == 200, f"got {status}")
+
+    status, body = request_json("POST", f"{api}/maintenance/plan", {"outage_fiber": 1})
+    check("检修预案返回 200 且 ok",
+          status == 200 and body.get("status") == "ok", f"got {status} {body}")
+    if status == 200 and body.get("status") == "ok":
+        a, r, q = body["affected"], body["resident"], body["alternate"]
+        check("检修前受影响路实际使用停用光纤 #1", 1 in a["fibers"], f"{a['fibers']}")
+        check("驻留路两阶段不变", body["before"]["resident"] == body["during"]["resident"])
+        check("停用期间两路均不使用停用光纤",
+              1 not in r["fibers"] and 1 not in q["fibers"], f"{r['fibers']} {q['fibers']}")
+        check("检修前双路接续点独立",
+              not (set(a["nodes"][1:-1]) & set(r["nodes"][1:-1])))
+        check("检修前双路光纤不复用", not (set(a["fibers"]) & set(r["fibers"])))
+        check("停用期间双路接续点独立",
+              not (set(q["nodes"][1:-1]) & set(r["nodes"][1:-1])))
+        check("停用期间双路光纤不复用", not (set(q["fibers"]) & set(r["fibers"])))
+        check("三路两两不同",
+              len({tuple(a["fibers"]), tuple(r["fibers"]), tuple(q["fibers"])}) == 3)
+        check("三路衰减均不超限",
+              a["attenuation"] <= 1000 and r["attenuation"] <= 1000
+              and q["attenuation"] <= 1000)
+        check("切换线路与长度增量一致",
+              body["switched_path"]["from"] == a
+              and body["switched_path"]["to"] == q
+              and body["switched_path"]["length_delta"] == q["length"] - a["length"])
+        check("裁决结果：驻留路 #3,#4,#5、替代路 #6,#7",
+              r["fibers"] == [3, 4, 5] and q["fibers"] == [6, 7],
+              f"R={r['fibers']} Q={q['fibers']}")
+
+    status, body = request_json("GET", f"{api}/maintenance/latest")
+    check("草稿与停用光纤未变时 latest 返回 200", status == 200, f"got {status}")
+
+    # 改选目标停用光纤 -> 旧预案失效
+    status, _ = request_json("PUT", f"{api}/maintenance/outage", {"outage_fiber": 2})
+    check("登记新的停用光纤", status == 200, f"got {status}")
+    status, body = request_json("GET", f"{api}/maintenance/latest")
+    check("停用光纤改变后旧预案失效（409）", status == 409, f"got {status} {body}")
+
+    # 草稿修改 -> 旧预案失效
+    request_json("POST", f"{api}/maintenance/plan", {"outage_fiber": 1})
+    changed = dict(MAINT_DRAFT, attenuation_limit=999)
+    request_json("PUT", f"{api}/draft", changed)
+    status, _ = request_json("GET", f"{api}/maintenance/latest")
+    check("草稿修改后旧检修预案失效（409）", status == 409, f"got {status}")
+
+    # 停用光纤序号越界 -> 422；无草稿 -> 409
+    status, _ = request_json("POST", f"{api}/maintenance/plan", {"outage_fiber": 99})
+    check("停用光纤序号越界返回 422", status == 422, f"got {status}")
+
+    # 无法只切换一路时必须明确提示
+    request_json("PUT", f"{api}/draft", MAINT_INFEASIBLE_DRAFT)
+    status, body = request_json("POST", f"{api}/maintenance/plan", {"outage_fiber": 1})
+    check("不可行时返回 infeasible",
+          status == 200 and body.get("status") == "infeasible", f"got {status} {body}")
+    check("信息包含『无法形成无中断检修预案』",
+          isinstance(body, dict) and "无法形成无中断检修预案" in (body.get("message") or ""))
+    check("infeasible 时不返回任何阶段线路",
+          isinstance(body, dict) and body.get("before") is None
+          and body.get("during") is None and body.get("alternate") is None)
 
     print()
     if FAILED:

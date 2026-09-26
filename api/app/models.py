@@ -57,3 +57,9 @@ class Draft(BaseModel):
             if f.a not in node_set or f.b not in node_set:
                 raise ValueError("光纤端点必须是已录入的接续点")
         return self
+
+
+class MaintenancePlanRequest(BaseModel):
+    """计划检修停用光纤的选择（1 基录入序号；上界由当前草稿光纤数决定，在路由层校验）。"""
+
+    outage_fiber: int = Field(ge=1, description="计划检修停用光纤的录入序号（1 基）")
