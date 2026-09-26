@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>展柜报警链路冗余裁决</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <h1>馆藏库房恒湿展柜报警链路 · 冗余路由裁决</h1>
+    <p class="subtitle">
+      录入 5–9 个接续点与 7–15 段可用光纤，指定主控室与展柜后提交裁决。
+      系统将选出一条主路与一条备路：两路除两端外不共享接续点、不复用同一光纤，且各自衰减不超过上限。
+    </p>
+  </header>
+
+  <main>
+    <section class="panel" id="draft-panel">
+      <h2>草稿录入</h2>
+      <div class="row">
+        <label>接续点数量（5–9）
+          <input type="number" id="node-count" min="5" max="9" step="1">
+        </label>
+        <label>主控室
+          <select id="source-select"></select>
+        </label>
+        <label>展柜
+          <select id="target-select"></select>
+        </label>
+        <label>每路衰减上限（整数）
+          <input type="number" id="att-limit" min="0" step="1">
+        </label>
+      </div>
+
+      <h3>接续点名称</h3>
+      <div id="node-names" class="node-names"></div>
+
+      <h3>可用光纤（<span id="fiber-count-label">0</span> / 7–15 段）</h3>
+      <table id="fiber-table">
+        <thead>
+          <tr><th>序号</th><th>端点 A</th><th>端点 B</th><th>长度（正整数）</th><th>衰减（非负整数）</th><th></th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+
+      <div class="row actions">
+        <button id="add-fiber" type="button">＋ 添加光纤</button>
+        <button id="load-sample" type="button">载入示例</button>
+        <button id="submit" type="button" class="primary">提交裁决</button>
+      </div>
+      <p id="form-error" class="error" hidden></p>
+    </section>
+
+    <section class="panel" id="topology-panel">
+      <h2>拓扑图</h2>
+      <svg id="topology" viewBox="0 0 560 460" role="img" aria-label="光纤拓扑图"></svg>
+      <div class="legend">
+        <span><i class="swatch sw-primary"></i>主路</span>
+        <span><i class="swatch sw-backup"></i>备路</span>
+        <span><i class="swatch sw-source"></i>主控室</span>
+        <span><i class="swatch sw-target"></i>展柜</span>
+        <span class="legend-note">边标签：#录入序号 L长度 A衰减</span>
+      </div>
+    </section>
+
+    <section class="panel" id="result-panel" hidden>
+      <h2>裁决结果</h2>
+      <div id="result-banner"></div>
+      <div id="details" class="details"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
