@@ -1,8 +1,10 @@
 "use strict";
 
 /* 展柜报警链路冗余裁决 —— 前端逻辑。
- * 所有裁决均调用真实业务 API（/api/draft、/api/adjudicate），前端不做任何本地裁决。
- * 修改任一草稿字段后，本地立即作废旧裁决，并将新草稿同步到服务端使服务端裁决一并失效。
+ * 所有裁决均调用真实业务 API（/api/draft、/api/adjudicate、/api/maintenance/plan），
+ * 前端不做任何本地裁决。
+ * 修改任一草稿字段（含计划停用光纤）后，本地立即作废旧裁决与旧检修预案，
+ * 并将新草稿同步到服务端使服务端结果一并失效。
  */
 
 const MIN_NODES = 5, MAX_NODES = 9, MIN_FIBERS = 7, MAX_FIBERS = 15;
@@ -22,6 +24,27 @@ const SAMPLE = {
   source: "J1",
   target: "J6",
   attLimit: 10,
+  maintenanceFiber: null,
+};
+
+/* 三走廊拓扑：光纤 #1 计划停用时存在无中断检修预案。 */
+const MAINTENANCE_SAMPLE = {
+  nodes: ["J1", "J2", "J3", "J4", "J5", "J6", "J7", "J8"],
+  fibers: [
+    { a: "J1", b: "J2", length: 3, attenuation: 1 },
+    { a: "J2", b: "J3", length: 3, attenuation: 1 },
+    { a: "J3", b: "J8", length: 3, attenuation: 1 },
+    { a: "J1", b: "J4", length: 4, attenuation: 1 },
+    { a: "J4", b: "J5", length: 4, attenuation: 1 },
+    { a: "J5", b: "J8", length: 4, attenuation: 1 },
+    { a: "J1", b: "J6", length: 4, attenuation: 1 },
+    { a: "J6", b: "J7", length: 4, attenuation: 1 },
+    { a: "J7", b: "J8", length: 4, attenuation: 1 },
+  ],
+  source: "J1",
+  target: "J8",
+  attLimit: 10,
+  maintenanceFiber: 1,
 };
 
 const state = {
@@ -30,7 +53,10 @@ const state = {
   source: "",
   target: "",
   attLimit: 0,
+  maintenanceFiber: null, // 计划检修停用的光纤录入序号（1 基），null 表示未选择
   result: null, // 当前展示的裁决（来自服务端）
+  maintenanceResult: null, // 当前展示的检修预案（来自服务端）
+  maintStage: "before", // 拓扑图展示的预案阶段：before=检修前 / during=停用期间
 };
 
 const $ = (id) => document.getElementById(id);
@@ -150,6 +176,28 @@ function renderFiberRows() {
   });
   $("fiber-count-label").textContent = state.fibers.length;
   $("add-fiber").disabled = state.fibers.length >= MAX_FIBERS;
+  renderMaintenanceSelect();
+}
+
+/* 计划停用光纤下拉：跟随光纤表重建，保留仍有效的选择。 */
+function renderMaintenanceSelect() {
+  const sel = $("maintenance-select");
+  sel.innerHTML = "";
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "不选择";
+  sel.appendChild(none);
+  state.fibers.forEach((f, i) => {
+    const opt = document.createElement("option");
+    opt.value = String(i + 1);
+    opt.textContent = `#${i + 1} ${f.a}⇄${f.b}（L${f.length} A${f.attenuation}）`;
+    sel.appendChild(opt);
+  });
+  if (state.maintenanceFiber === null || state.maintenanceFiber > state.fibers.length) {
+    state.maintenanceFiber = null;
+  }
+  sel.value = state.maintenanceFiber === null ? "" : String(state.maintenanceFiber);
+  $("maintenance-submit").disabled = state.maintenanceFiber === null;
 }
 
 function renderAll() {
@@ -195,6 +243,7 @@ function collectDraft() {
       source: state.source,
       target: state.target,
       attenuation_limit: state.attLimit,
+      maintenance_fiber: state.maintenanceFiber,
     },
   };
 }
@@ -204,13 +253,18 @@ function collectDraft() {
 let saveTimer = null;
 
 function onDraftChanged() {
-  // 本地立即使旧裁决失效
+  // 本地立即使旧裁决、旧检修预案失效
   if (state.result) {
     state.result = null;
     showStale();
   }
+  if (state.maintenanceResult) {
+    state.maintenanceResult = null;
+    showMaintenanceStale();
+  }
+  renderMaintenanceSelect(); // 光纤端点/参数可能已改，刷新停用光纤下拉标签
   drawTopology();
-  // 防抖同步草稿到服务端，使服务端旧裁决一并失效（草稿合法时才保存）
+  // 防抖同步草稿到服务端，使服务端旧结果一并失效（草稿合法时才保存）
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     const { draft } = collectDraft();
@@ -224,6 +278,15 @@ function showStale() {
   $("result-banner").innerHTML =
     '<div class="banner banner-stale">草稿已修改，旧裁决已失效，请重新提交裁决。</div>';
   $("details").innerHTML = "";
+}
+
+function showMaintenanceStale() {
+  const panel = $("maintenance-panel");
+  panel.hidden = false;
+  $("maintenance-banner").innerHTML =
+    '<div class="banner banner-stale">草稿或目标停用光纤已修改，旧检修预案已失效，请重新生成。</div>';
+  $("maintenance-details").innerHTML = "";
+  $("stage-toggle").hidden = true;
 }
 
 /* ---------------- API 调用 ---------------- */
@@ -268,6 +331,35 @@ async function submitAdjudication() {
     errBox.hidden = false;
   } finally {
     btn.disabled = false;
+  }
+}
+
+async function submitMaintenance() {
+  const errBox = $("form-error");
+  errBox.hidden = true;
+  const { draft, errors } = collectDraft();
+  if (errors) {
+    errBox.textContent = "草稿校验未通过：" + errors.join("；");
+    errBox.hidden = false;
+    return;
+  }
+  if (state.maintenanceFiber === null) {
+    errBox.textContent = "请先在草稿中选择计划检修停用的光纤。";
+    errBox.hidden = false;
+    return;
+  }
+  const btn = $("maintenance-submit");
+  btn.disabled = true;
+  try {
+    await api("PUT", "/api/draft", draft);
+    state.maintenanceResult = await api("POST", "/api/maintenance/plan");
+    state.maintStage = "before";
+    renderMaintenanceResult();
+  } catch (e) {
+    errBox.textContent = "检修预案请求失败：" + e.message;
+    errBox.hidden = false;
+  } finally {
+    btn.disabled = state.maintenanceFiber === null;
   }
 }
 
@@ -317,6 +409,57 @@ function renderResult() {
   panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
+/* ---------------- 检修切换预案渲染 ---------------- */
+
+function renderMaintenanceResult() {
+  const r = state.maintenanceResult;
+  const panel = $("maintenance-panel");
+  panel.hidden = false;
+  const banner = $("maintenance-banner");
+  const details = $("maintenance-details");
+  const toggle = $("stage-toggle");
+  if (r.status === "ok") {
+    const target = r.maintenance_fiber;
+    banner.innerHTML =
+      `<div class="banner banner-ok">已生成无中断检修预案：仅切换受影响路，` +
+      `驻留路在检修前与停用期间保持完整接续点与光纤序列不变（计划停用光纤 #${target}）。</div>`;
+    const maxLen = Math.max(r.affected.length, r.resident.length, r.replacement.length);
+    const totalAtt = r.affected.attenuation + r.resident.attenuation + r.replacement.attenuation;
+    const delta = r.replacement.length - r.affected.length;
+    details.innerHTML =
+      `<h3 class="stage-title">阶段一 · 检修前（光纤 #${target} 在用）</h3>` +
+      `<div class="details">` +
+      pathCard("受影响路 · 切换线路（停用开始即切出）", "affected", r.affected) +
+      pathCard("驻留路 · 两阶段不变", "resident", r.resident) +
+      `</div>` +
+      `<h3 class="stage-title">阶段二 · 停用期间（光纤 #${target} 停用）</h3>` +
+      `<div class="details">` +
+      pathCard("替代路 · 切换线路（恢复后切回）", "replacement", r.replacement) +
+      pathCard("驻留路 · 与阶段一完全一致", "resident", r.resident) +
+      `</div>` +
+      `<div class="summary">裁决要点：三路最长长度 ${maxLen}，三路总衰减 ${totalAtt}，` +
+      `替代路相对原路长度增量 ${delta}；两阶段各自衰减均未超过上限（草稿版本 v${r.draft_version}）。` +
+      `可在拓扑图上方切换阶段查看两组线路。</div>`;
+    toggle.hidden = false;
+    updateStageButtons();
+  } else {
+    banner.innerHTML =
+      '<div class="banner banner-infeasible">无法形成无中断检修预案' +
+      `<p>${escapeHtml(r.message || "在只切换一路的条件下，没有可行的检修前/停用期间双路组合。")}</p></div>`;
+    details.innerHTML =
+      '<div class="summary">系统不会把共享接续点、复用光纤或衰减超限的路线冒充为切换预案。' +
+      "请调整光纤连接、衰减上限，或改选其他计划停用光纤后重新生成。</div>";
+    toggle.hidden = true;
+  }
+  drawTopology();
+  panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function updateStageButtons() {
+  $("stage-before").classList.toggle("active", state.maintStage === "before");
+  $("stage-during").classList.toggle("active", state.maintStage === "during");
+}
+
 /* ---------------- 拓扑图 ---------------- */
 
 function drawTopology() {
@@ -334,13 +477,29 @@ function drawTopology() {
   });
 
   const result = state.result && state.result.status === "ok" ? state.result : null;
+  const maint = state.maintenanceResult && state.maintenanceResult.status === "ok"
+    ? state.maintenanceResult
+    : null;
   const fiberRole = {};
   const nodeRole = {};
-  if (result) {
+  if (maint) {
+    // 检修预案分阶段着色：驻留路两阶段不变，切换线路随阶段变化
+    const active = state.maintStage === "before" ? maint.affected : maint.replacement;
+    const activeRole = state.maintStage === "before" ? "affected" : "replacement";
+    active.fibers.forEach((f) => (fiberRole[f] = activeRole));
+    maint.resident.fibers.forEach((f) => (fiberRole[f] = "resident"));
+    active.nodes.forEach((n) => (nodeRole[n] = activeRole));
+    maint.resident.nodes.forEach((n) => (nodeRole[n] = "resident"));
+    if (state.maintStage === "during") fiberRole[maint.maintenance_fiber] = "outage";
+  } else if (result) {
     result.primary.fibers.forEach((f) => (fiberRole[f] = "primary"));
     result.backup.fibers.forEach((f) => (fiberRole[f] = "backup"));
     result.primary.nodes.forEach((n) => (nodeRole[n] = "primary"));
     result.backup.nodes.forEach((n) => (nodeRole[n] = "backup"));
+  }
+  // 未生成预案时，已选择的计划停用光纤以虚线标出
+  if (!maint && state.maintenanceFiber !== null && fiberRole[state.maintenanceFiber] === undefined) {
+    fiberRole[state.maintenanceFiber] = "target";
   }
   nodeRole[state.source] = "source";
   nodeRole[state.target] = "target";
@@ -376,7 +535,13 @@ function drawTopology() {
     label.setAttribute("x", qx + nx * 12);
     label.setAttribute("y", qy + ny * 12);
     label.setAttribute("class", "edge-label" + (role ? " edge-label-" + role : ""));
-    label.textContent = `#${i + 1} L${f.length} A${f.attenuation}`;
+    let labelText = `#${i + 1} L${f.length} A${f.attenuation}`;
+    if (state.maintenanceFiber === i + 1) {
+      if (maint && state.maintStage === "during") labelText = `#${i + 1} ✕停用`;
+      else if (maint) labelText += " ⚠将停用";
+      else labelText += " ⚠停用目标";
+    }
+    label.textContent = labelText;
     svg.appendChild(label);
   });
 
@@ -432,6 +597,11 @@ function bindEvents() {
     state.attLimit = e.target.value === "" ? "" : Number(e.target.value);
     onDraftChanged();
   });
+  $("maintenance-select").addEventListener("change", (e) => {
+    state.maintenanceFiber = e.target.value === "" ? null : Number(e.target.value);
+    renderMaintenanceSelect();
+    onDraftChanged();
+  });
 
   $("add-fiber").addEventListener("click", () => {
     if (state.fibers.length >= MAX_FIBERS) return;
@@ -445,7 +615,21 @@ function bindEvents() {
     onDraftChanged();
   });
 
+  $("load-maintenance-sample").addEventListener("click", () => {
+    loadMaintenanceSample();
+    onDraftChanged();
+  });
+
   $("submit").addEventListener("click", submitAdjudication);
+  $("maintenance-submit").addEventListener("click", submitMaintenance);
+  $("stage-before").addEventListener("click", () => setMaintStage("before"));
+  $("stage-during").addEventListener("click", () => setMaintStage("during"));
+}
+
+function setMaintStage(stage) {
+  state.maintStage = stage;
+  updateStageButtons();
+  drawTopology();
 }
 
 function loadSample() {
@@ -454,6 +638,17 @@ function loadSample() {
   state.source = SAMPLE.source;
   state.target = SAMPLE.target;
   state.attLimit = SAMPLE.attLimit;
+  state.maintenanceFiber = SAMPLE.maintenanceFiber;
+  renderAll();
+}
+
+function loadMaintenanceSample() {
+  state.nodes = MAINTENANCE_SAMPLE.nodes.slice();
+  state.fibers = MAINTENANCE_SAMPLE.fibers.map((f) => ({ ...f }));
+  state.source = MAINTENANCE_SAMPLE.source;
+  state.target = MAINTENANCE_SAMPLE.target;
+  state.attLimit = MAINTENANCE_SAMPLE.attLimit;
+  state.maintenanceFiber = MAINTENANCE_SAMPLE.maintenanceFiber;
   renderAll();
 }
 

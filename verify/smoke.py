@@ -80,6 +80,26 @@ INFEASIBLE_DRAFT = {
     "attenuation_limit": 100,
 }
 
+# 三走廊拓扑：光纤 #1 计划停用时存在无中断检修预案
+MAINTENANCE_DRAFT = {
+    "nodes": ["J1", "J2", "J3", "J4", "J5", "J6", "J7", "J8"],
+    "fibers": [
+        {"a": "J1", "b": "J2", "length": 3, "attenuation": 1},
+        {"a": "J2", "b": "J3", "length": 3, "attenuation": 1},
+        {"a": "J3", "b": "J8", "length": 3, "attenuation": 1},
+        {"a": "J1", "b": "J4", "length": 4, "attenuation": 1},
+        {"a": "J4", "b": "J5", "length": 4, "attenuation": 1},
+        {"a": "J5", "b": "J8", "length": 4, "attenuation": 1},
+        {"a": "J1", "b": "J6", "length": 4, "attenuation": 1},
+        {"a": "J6", "b": "J7", "length": 4, "attenuation": 1},
+        {"a": "J7", "b": "J8", "length": 4, "attenuation": 1},
+    ],
+    "source": "J1",
+    "target": "J8",
+    "attenuation_limit": 10,
+    "maintenance_fiber": 1,
+}
+
 
 def main():
     print(f"API_URL={API_URL}  WEB_URL={WEB_URL}")
@@ -152,6 +172,69 @@ def main():
     bad = dict(FEASIBLE_DRAFT, fibers=FEASIBLE_DRAFT["fibers"][:6])
     status, _ = request_json("PUT", f"{api}/draft", bad)
     check("光纤少于 7 段被拒绝（422）", status == 422, f"got {status}")
+
+    print("-- 检修切换预案：联合裁决与分阶段结果 --")
+    status, body = request_json("PUT", f"{api}/draft", MAINTENANCE_DRAFT)
+    check("保存含计划停用光纤的草稿", status == 200 and body.get("status") == "saved", f"got {status} {body}")
+
+    status, body = request_json("POST", f"{api}/maintenance/plan")
+    ok = status == 200 and isinstance(body, dict) and body.get("status") == "ok"
+    check("检修预案裁决状态为 ok", ok, f"got {status} {body}")
+    if ok:
+        a, r, b = body["affected"], body["resident"], body["replacement"]
+        check("检修前双路实际使用目标光纤", 1 in a["fibers"], f"{a['fibers']}")
+        check("停用期间双路不使用目标光纤",
+              1 not in r["fibers"] and 1 not in b["fibers"])
+        check("两阶段中间接续点各自独立",
+              not (set(a["nodes"][1:-1]) & set(r["nodes"][1:-1]))
+              and not (set(b["nodes"][1:-1]) & set(r["nodes"][1:-1])),
+              f"{a['nodes']} {r['nodes']} {b['nodes']}")
+        check("两阶段光纤各自不复用",
+              not (set(a["fibers"]) & set(r["fibers"]))
+              and not (set(b["fibers"]) & set(r["fibers"])))
+        check("预案各路衰减不超限",
+              all(p["attenuation"] <= 10 for p in (a, r, b)))
+        check("预案最优解：受影响路/驻留路/替代路各为一条走廊",
+              a["fibers"] == [1, 2, 3] and r["fibers"] == [4, 5, 6] and b["fibers"] == [7, 8, 9],
+              f"{a['fibers']} {r['fibers']} {b['fibers']}")
+
+    status, body2 = request_json("GET", f"{api}/maintenance/plan/latest")
+    check("草稿未变时 latest 返回同一预案", status == 200 and body2 == body, f"got {status}")
+
+    print("-- 目标停用光纤或草稿改变后旧预案撤销 --")
+    changed = dict(MAINTENANCE_DRAFT, maintenance_fiber=2)
+    status, _ = request_json("PUT", f"{api}/draft", changed)
+    check("改选目标停用光纤保存成功", status == 200, f"got {status}")
+    status, _ = request_json("GET", f"{api}/maintenance/plan/latest")
+    check("旧预案已失效（latest 返回 409）", status == 409, f"got {status}")
+    status, body = request_json("POST", f"{api}/maintenance/plan")
+    check("对新目标光纤重新生成预案", status == 200 and body.get("status") == "ok", f"got {status} {body}")
+    changed = dict(changed, attenuation_limit=9)
+    status, _ = request_json("PUT", f"{api}/draft", changed)
+    status, _ = request_json("GET", f"{api}/maintenance/plan/latest")
+    check("修改草稿其他字段旧预案同样失效（409）", status == 409, f"got {status}")
+
+    print("-- 无法只切换一路覆盖停纤时必须明确报告 --")
+    infeasible_maint = dict(FEASIBLE_DRAFT, maintenance_fiber=5)
+    status, _ = request_json("PUT", f"{api}/draft", infeasible_maint)
+    check("保存不可行检修草稿", status == 200, f"got {status}")
+    status, body = request_json("POST", f"{api}/maintenance/plan")
+    check("预案状态为 infeasible",
+          status == 200 and isinstance(body, dict) and body.get("status") == "infeasible",
+          f"got {status} {body}")
+    check("返回信息包含『无法形成无中断检修预案』",
+          isinstance(body, dict) and "无法形成无中断检修预案" in (body.get("message") or ""))
+    check("infeasible 时不返回任何线路",
+          isinstance(body, dict) and body.get("resident") is None
+          and body.get("affected") is None and body.get("replacement") is None)
+
+    print("-- 检修预案录入校验 --")
+    status, _ = request_json("PUT", f"{api}/draft", FEASIBLE_DRAFT)
+    status, body = request_json("POST", f"{api}/maintenance/plan")
+    check("未选择停用光纤时拒绝生成（409）", status == 409, f"got {status} {body}")
+    bad = dict(FEASIBLE_DRAFT, maintenance_fiber=99)
+    status, _ = request_json("PUT", f"{api}/draft", bad)
+    check("停用光纤序号超出范围被拒绝（422）", status == 422, f"got {status}")
 
     print()
     if FAILED:

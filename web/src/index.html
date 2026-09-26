@@ -12,6 +12,8 @@
     <p class="subtitle">
       录入 5–9 个接续点与 7–15 段可用光纤，指定主控室与展柜后提交裁决。
       系统将选出一条主路与一条备路：两路除两端外不共享接续点、不复用同一光纤，且各自衰减不超过上限。
+      还可选择一段计划检修停用的光纤，生成检修前与停用期间均保持双路独立的切换预案：
+      驻留路两阶段不变，仅切换受影响路。
     </p>
   </header>
 
@@ -31,6 +33,9 @@
         <label>每路衰减上限（整数）
           <input type="number" id="att-limit" min="0" step="1">
         </label>
+        <label>计划检修停用光纤（可选）
+          <select id="maintenance-select"></select>
+        </label>
       </div>
 
       <h3>接续点名称</h3>
@@ -47,19 +52,30 @@
       <div class="row actions">
         <button id="add-fiber" type="button">＋ 添加光纤</button>
         <button id="load-sample" type="button">载入示例</button>
+        <button id="load-maintenance-sample" type="button">载入检修示例</button>
         <button id="submit" type="button" class="primary">提交裁决</button>
+        <button id="maintenance-submit" type="button" class="maintenance" disabled>生成检修切换预案</button>
       </div>
       <p id="form-error" class="error" hidden></p>
     </section>
 
     <section class="panel" id="topology-panel">
       <h2>拓扑图</h2>
+      <div class="stage-toggle" id="stage-toggle" hidden>
+        <span class="stage-label">检修预案阶段：</span>
+        <button type="button" id="stage-before" class="stage-btn active">检修前</button>
+        <button type="button" id="stage-during" class="stage-btn">停用期间</button>
+      </div>
       <svg id="topology" viewBox="0 0 560 460" role="img" aria-label="光纤拓扑图"></svg>
       <div class="legend">
         <span><i class="swatch sw-primary"></i>主路</span>
         <span><i class="swatch sw-backup"></i>备路</span>
         <span><i class="swatch sw-source"></i>主控室</span>
         <span><i class="swatch sw-target"></i>展柜</span>
+        <span><i class="swatch sw-resident"></i>驻留路</span>
+        <span><i class="swatch sw-affected"></i>受影响路</span>
+        <span><i class="swatch sw-replacement"></i>替代路</span>
+        <span><i class="swatch sw-outage"></i>停用光纤</span>
         <span class="legend-note">边标签：#录入序号 L长度 A衰减</span>
       </div>
     </section>
@@ -68,6 +84,12 @@
       <h2>裁决结果</h2>
       <div id="result-banner"></div>
       <div id="details" class="details"></div>
+    </section>
+
+    <section class="panel" id="maintenance-panel" hidden>
+      <h2>检修切换预案</h2>
+      <div id="maintenance-banner"></div>
+      <div id="maintenance-details"></div>
     </section>
   </main>
 

@@ -36,6 +36,10 @@ class Draft(BaseModel):
     source: str = Field(min_length=1, description="主控室")
     target: str = Field(min_length=1, description="展柜")
     attenuation_limit: int = Field(ge=0, description="每路衰减上限")
+    maintenance_fiber: int | None = Field(
+        default=None, ge=1,
+        description="计划检修停用的光纤录入序号（1 基），可选；保存后随草稿版本生效",
+    )
 
     @field_validator("nodes")
     @classmethod
@@ -56,4 +60,6 @@ class Draft(BaseModel):
         for f in self.fibers:
             if f.a not in node_set or f.b not in node_set:
                 raise ValueError("光纤端点必须是已录入的接续点")
+        if self.maintenance_fiber is not None and self.maintenance_fiber > len(self.fibers):
+            raise ValueError("计划检修停用的光纤序号超出已录入光纤范围")
         return self
